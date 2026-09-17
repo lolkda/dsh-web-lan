@@ -1,0 +1,72 @@
+# 本包的 bundle patch。安装本包（`dsh plugin --profile web add link:<本目录>`）
+# 之后，CLI 的 reconcilePlugins 会因为本包声明了 dsh.bundle.patch 而把它追加进
+# profile 的 dsh.profile.bundles —— 于是**每次正常启动都自动挂载这一层**，
+# 不需要任何 --patch 参数、环境变量或快捷方式。这就是「彻底解决」的全部机制。
+#
+# 它必须在 @deepseek-ai/dsh-web-app 之后应用（bundles 数组里排在后面），
+# 因为要覆盖的 webserver / connection 两行是 dsh-web-app 插入的。
+#
+# ── 为什么必须从 patch 层改 bind ──────────────────────────────────────────
+# CLI 的 --host 被两道护栏锁死，任何非 loopback 的 bind 都出不来：
+#   dsh-web-app/lib/startup.js:40       显式拒绝 --host 0.0.0.0
+#   dsh-host-webserver/lib/index.js:141  host 的 schema 只接受 '127.0.0.1' | '0.0.0.0'
+# 这两道都是官方为「这个面板等于本机任意命令执行」而设的安全默认值。本包的做法
+# 是保留默认姿态、把它变成显式选择：装了就开，卸了就回到 loopback。
+
+# 绑所有接口。带一个逃生口：临时只想本机，用 $env:DSH_WEB_LOOPBACK='1' 启动。
+# 显式传 --host 时以命令行为准（但 --host 0.0.0.0 仍会被 CLI 拒掉）。
+- id: webserver
+  name: '@deepseek-ai/dsh-host-webserver'
+  inject: [webStartup]
+  config:
+    host: !!js ctx.webStartup.host ?? ((process.env.DSH_WEB_LOOPBACK === '1') && '127.0.0.1' || '0.0.0.0')
+    port: !!js ctx.webStartup.port ?? 3080
+    compression: gzip
+    compressionLevel: 1
+    compressionThresholdBytes: 1024
+
+# 两个独立的问题都在这一行：
+#
+# 1) Host 白名单。/api 的 browser-trust fence 要求 Host 是 loopback 或命中
+#    trustedHosts；而 dsh-web-app 的 resolveLanTrust() 只在 bind 恰好是 '0.0.0.0'
+#    时才派生 LAN 字面量（取本机所有非 internal IPv4）。上面已经把 bind 改成
+#    0.0.0.0，所以本机 IP 自动可信；这里额外拼上 DSH_WEB_TRUSTED_HOSTS，供
+#    「远端用域名 / SD-WAN 名字 / 旁路由发布名」访问时补白名单。
+#
+# 2) 会话有效期。dsh 的启动 token 只在内存里（randomBytes(32)，不落盘），但它换来的
+#    浏览器 cookie 用 $DSH_HOME/.credentials.yaml 里持久化的
+#    client-connection/browser-session 密钥签名，payload 只有
+#    {authority, issuedAt, expiresAt}，不含进程态 —— 所以 cookie 能跨重启存活。
+#    默认 30 天；这里拉到 10 年，等于「每台设备带一次 token，之后永久免」。
+#    撤销全部设备：删掉 .credentials.yaml 里那条 browser-session 记录并重启 dsh。
+#
+# 写法注意（YAML 纯标量的两个坑，都是实测踩出来的）：
+#   a) !!js 的值不能以 [ 开头 —— 会被当成 flow sequence，里面的单引号随即变成
+#      引号定界符，报 "unexpected end of the stream within a single quoted scalar"；
+#   b) 不能出现「空格 冒号 空格」—— 三元运算符 ? a : b 里的 : 会被当成 mapping
+#      指示符，报 "bad indentation of a mapping entry"。
+# 所以这里用 .concat(...) 而非 [ ... ]，用 && / || 而非三元。
+- id: connection
+  name: '@deepseek-ai/dsh-client-connection'
+  inject: [webRuntime]
+  config:
+    cookieMaxAgeDays: 3650
+    trustedHosts: !!js ctx.webRuntime.trustedHosts.concat((process.env.DSH_WEB_TRUSTED_HOSTS || '').split(',').map(s => s.trim()).filter(Boolean))
+
+# 宿主半边：只负责「报到」——把每个网卡的可达地址打出来（绕开
+# dsh-web-app 只打印 lanAddresses[0] 的坑），并在 autoLogin 打开时注册免 token 入口。
+- insert:
+    - id: dsh-web-lan
+      name: '@lolkda/dsh-web-lan'
+      config:
+        # false（默认）：照旧需要每台设备带一次 token；本包会把带 token 的完整
+        #                URL 按网卡逐个打好，直接复制即可。
+        # true         ：额外注册一个短路径入口，任何能连到这个端口的人打开它都会
+        #                被自动发放会话 —— 等价于这条网段上不要鉴权。仅在你自己
+        #                完全信任的网段（家用 LAN、自建 VPN）上打开。
+        autoLogin: false
+        # autoLogin 打开时使用的入口路径。它是 webserver 的 exact 路由，
+        # 优先级高于 frontend-static 占的 fallback 座位，所以不会被 SPA 抢走。
+        bootstrapPath: '/go'
+        # 启动时按网卡逐个打印可达地址。
+        printLanUrls: true
