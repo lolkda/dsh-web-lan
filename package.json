@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "description": "Let `dsh web` be reachable from other machines on the LAN / a virtual LAN (SD-WAN, Tailscale, ZeroTier) with no extra command line: ships a profile patch layer that binds all interfaces, widens the /api Host trust fence, and extends the browser-session cookie. Optional token-free entry at /go.",
   "repository": { "type": "git", "url": "git+https://github.com/lolkda/dsh-web-lan.git" },
+  "homepage": "https://github.com/lolkda/dsh-web-lan#readme",
+  "bugs": "https://github.com/lolkda/dsh-web-lan/issues",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -16,8 +18,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "check": "node --check lib/index.js && node --test test/",
-    "test": "node --test test/"
+    "test": "node --test",
+    "check": "node --check lib/index.js && node --test"
   },
   "dsh": {
     "bundle": {

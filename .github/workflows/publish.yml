@@ -1,0 +1,66 @@
+# 发布到 npm：打 v* 标签即发布，也可手动触发（workflow_dispatch）重跑。
+#
+# 发布前有三道闸：
+#   1. 测试必须过
+#   2. 标签版本必须等于 package.json 的 version（打错标签不会静默发错版本）
+#   3. 该版本若已存在则拒绝（npm 的同一版本不可覆盖，早失败比等 npm 报错清楚）
+#
+# 凭据走仓库 Secret `NPM_TOKEN`。想免掉长期 token 的话，可以在 npmjs.com 给本包
+# 配置 Trusted Publisher（GitHub Actions + 本仓库 + 本工作流名），然后删掉下面
+# publish 步骤的 NODE_AUTH_TOKEN、并去掉本文件的 Secret 依赖 —— 那样 CI 用 OIDC
+# 短时凭据换取发布权，仓库里不再有可长期使用的发布 token。
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# contents: read 是最小读权限；id-token: write 是 `--provenance` 需要的
+# OIDC 令牌来源，用于把构建来源证明写进公开的透明日志。
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # 本包零依赖，所以没有 install 步骤可跑 —— 直接测。
+      - name: Test
+        run: npm test
+
+      - name: Tag must match package.json version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v${tag} does not match package.json version ${pkg}"
+            exit 1
+          fi
+          echo "releasing ${pkg}"
+
+      - name: Refuse to republish an existing version
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "${name}@${version}" version >/dev/null 2>&1; then
+            echo "::error::${name}@${version} is already published — bump package.json and re-tag"
+            exit 1
+          fi
+
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
