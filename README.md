@@ -21,11 +21,13 @@ dsh web
 
 本包的做法是保留官方默认姿态，把它变成一个显式选择：**装了就开，卸了就回到 loopback。**
 
-## 三个层次的问题，一次解决
+## 访问需要的几个环节
 
 1. **bind** —— patch 层把 webserver 行的 `host` 设成 `0.0.0.0`。只能从 patch 层进，因为 CLI 和 schema 两道护栏。
 2. **`/api` 的 Host 白名单** —— fence 要求 `Host` 是 loopback 或命中 `trustedHosts`，而 dsh 只在 bind 恰好是 `0.0.0.0` 时才派生 LAN 字面量。本包把 bind 打开后本机 IP 自动可信，另外支持用 `DSH_WEB_TRUSTED_HOSTS` 追加域名（远端用域名/旁路由发布名访问时必需）。
 3. **启动 token** —— token 只在内存里（`randomBytes(32)`，不落盘），但它换来的浏览器 cookie 是用 `$DSH_HOME/.credentials.yaml` 里持久化的密钥签名的，**能跨 dsh 重启存活**。本包把有效期从 30 天拉到 10 年，等于每台设备只需要带一次 token。
+
+4. **远程设置** —— 0.1.1 起修复 LAN 模型页的 `settings are unavailable in this browser`：通过公开插件接口提供宿主设置数据，不改 DSH 本体。
 
 ## 安装
 
@@ -35,7 +37,9 @@ dsh plugin --profile web add link:F:/project/dsh-web-lan
 
 `dsh plugin add` 会做一件事：因为本包声明了 `dsh.bundle.patch`，CLI 的 `reconcilePlugins` 会把它追加进 profile 的 `dsh.profile.bundles` —— 于是这一层成为**每次启动的一部分**，不再需要 `--patch`。
 
-装完重启 `dsh web`。启动行会按网卡逐个打印可用地址：
+0.1.1 的设置扩展要求 DSH `>=0.1.6-alpha.2 <0.2.0`；回归测试固定验证 `0.1.6-alpha.2`。更新本目录不会自动替换先前从 npm 安装的副本，需要重新安装本地版本。
+
+装完重启 `dsh web`，并刷新浏览器。启动行会按网卡逐个打印可用地址：
 
 ```
 dsh-web-lan: reachable on 0.0.0.0:3080 within 家用局域网 / 虚拟局域网 / VPN
@@ -52,6 +56,7 @@ dsh-web-lan:   172.30.226.31   http://172.30.226.31:3080/?token=...
 | `autoLogin` | `false` | `true` 时注册一个免 token 入口，任何能连到这个端口的人打开它都会被自动发放会话 |
 | `bootstrapPath` | `/go` | 免 token 入口的路径。注册在 webserver 的 `exact` 表，优先级高于 frontend-static 占的 `fallback` 座位 |
 | `printLanUrls` | `true` | 启动时按网卡打印可达地址 |
+| `remoteSettings` | `true` | 为已登录的 LAN 浏览器恢复模型与命名空间设置；只在全接口监听时启用 |
 
 ### 免 token 入口（`autoLogin: true`）
 
@@ -67,6 +72,29 @@ dsh-web-lan:   172.30.226.31   http://172.30.226.31:3080/?token=...
   config:
     autoLogin: true
 ```
+
+### LAN 模型设置（`remoteSettings: true`）
+
+0.1.1 增加了浏览器插件部分。官方设置服务会把非本机页面切到内存模式，模型页却需要宿主设置，因此显示 `settings are unavailable in this browser`。本插件通过 Cordis Loader 的公开服务隔离与启停接口，让原有页面使用本插件提供的宿主设置服务。
+
+- **不修改 DSH 的任何安装文件，不替换官方脚本，不改变全局 `isLoopback`。**
+- 所有读取、保存仍调用原有的设置 RPC，服务端登录、Host/Origin 和写权限检查照旧。
+- 本机地址访问保留官方服务；正常卸载浏览器插件时恢复原服务。安装/卸载整个包后应重启 DSH 并刷新页面。
+- 修改的是宿主共享配置，不是当前浏览器自己的副本。开启 `autoLogin` 的设备也能使用这些设置。
+- 不会额外开放通用设置中的本机原始文档编辑/打开功能；这些仍遵守上游自己的本机限制。
+- 若手工移除并重新添加官方设置基础插件，需要刷新页面重新建立服务关系；不会强行接管用户自定义的隔离服务。
+
+如需保留 LAN 访问、仅停用设置修复，在 profile 的补丁层为本插件设置：
+
+```yaml
+- id: dsh-web-lan
+  name: '@lolkda/dsh-web-lan'
+  config:
+    remoteSettings: false
+    # 若原先打开了 autoLogin，需要同时保留 autoLogin: true。
+```
+
+该开关在首页生成时传给浏览器，修改后重启 DSH 并刷新页面生效。
 
 ### 临时回到只本机
 
@@ -85,12 +113,15 @@ dsh plugin --profile web remove @lolkda/dsh-web-lan
 ## 已知边界
 
 - **`0.0.0.0` 是"所有网卡"** —— 它会在虚拟网卡（VPN、Hyper-V、SD-WAN）上一并监听。想只开某一块网卡需要另起 listener 做反代，本包不做。
-- **不改任何运行中的行** —— bind 是组合期配置，所以「装/卸」需要重启 `dsh web`。想要网页里的运行时开关得驱动 loader，代价是重新 listen、断开当前连接。
+- **不改宿主正在运行的监听配置** —— bind 是组合期配置，所以「装/卸」需要重启 `dsh web`。想要网页里的运行时开关得驱动 loader，代价是重新 listen、断开当前连接。
 - **上游升级可能改变假设** —— 本包依赖 `webserver` / `connection` 这两个行 id，以及 `/api` fence 的行为。`dsh-web-lan` 挂载时会检查实际 bind，被后续 patch 层覆盖时会打 warn 而不是打印不可达的地址。
-- **零依赖** —— 只 import `node:os`。`link:` 安装时 Node 按真实路径解析 import，所以没有 `node_modules` 的裸 checkout 也能加载。
+- **零运行依赖、无需构建** —— 宿主只 import `node:os`；浏览器使用 DSH 的标准模块注册格式，从宿主页面提供的模块表获取 Cordis。裸 checkout 的 `link:` 加载不依赖本地 `node_modules`。测试有锁定的开发依赖。
 
 ## 测试
 
 ```powershell
-npm test
+npm ci --ignore-scripts
+npm run check
 ```
+
+回归测试在独立内存环境中运行未经修改的官方设置和模型页控制器，以及真实 Cordis/Loader 生命周期，覆盖原始报错、LAN 恢复、本机不受影响、卸载恢复、失败回滚、并发保存、过期响应、推送更新与重载。不连接正在运行的 DSH，也不读取或改写用户配置；这不等同于已在你的远端浏览器完成现场验收。

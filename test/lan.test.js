@@ -7,7 +7,10 @@ function fakeCtx({ host = '0.0.0.0', port = 3080 } = {}) {
 	const registered = [];
 	const disposed = [];
 	const disposers = [];
+	const listeners = new Map();
 	return {
+		listeners,
+		on(event, handler) { listeners.set(event, handler); return () => listeners.delete(event); },
 		registered,
 		disposed,
 		disposers,
@@ -120,4 +123,26 @@ test('a non-all-interfaces bind warns instead of advertising unreachable URLs', 
 	ctx.logger.warn = (message) => { warned = message; };
 	apply(ctx, {});
 	assert.match(warned, /bound to 127\.0\.0\.1/u);
+});
+
+test('advertises LAN settings through the authenticated index injection contract', () => {
+	const ctx = fakeCtx();
+	apply(ctx, { printLanUrls: false });
+	const handler = ctx.listeners.get('webserver/index-inject');
+	assert.equal(typeof handler, 'function');
+	const rows = [];
+	handler(rows);
+	assert.deepEqual(rows, [{ kind: 'global', name: '__DSH_WEB_LAN_SETTINGS__', value: true }]);
+	assert.equal(ctx.registered.length, 0, 'enabling settings must not create an authentication bypass route');
+});
+
+test('LAN settings opt-out and loopback escape both disable the browser extension', () => {
+	for (const [options, config] of [[{}, { remoteSettings: false }], [{ host: '127.0.0.1' }, {}]]) {
+		const ctx = fakeCtx(options);
+		apply(ctx, { ...config, printLanUrls: false });
+		const rows = [];
+		assert.equal(typeof ctx.listeners.get('webserver/index-inject'), 'function');
+		ctx.listeners.get('webserver/index-inject')(rows);
+		assert.equal(rows[0].value, false);
+	}
 });

@@ -53,8 +53,8 @@
     cookieMaxAgeDays: 3650
     trustedHosts: !!js ctx.webRuntime.trustedHosts.concat((process.env.DSH_WEB_TRUSTED_HOSTS || '').split(',').map(s => s.trim()).filter(Boolean))
 
-# 宿主半边：只负责「报到」——把每个网卡的可达地址打出来（绕开
-# dsh-web-app 只打印 lanAddresses[0] 的坑），并在 autoLogin 打开时注册免 token 入口。
+# 宿主半边：打印各网卡地址、可选的免 token 入口，以及向已认证首页提供
+# LAN 设置开关。浏览器半边通过公开 Loader/设置服务接口恢复模型设置，不改 DSH 文件。
 - insert:
     - id: dsh-web-lan
       name: '@lolkda/dsh-web-lan'
@@ -70,3 +70,7 @@
         bootstrapPath: '/go'
         # 启动时按网卡逐个打印可达地址。
         printLanUrls: true
+
+        # 让已登录的 LAN 浏览器使用宿主设置；不修改 isLoopback 或登录/Host 校验。
+        # false 时保留旧行为。修改此项后重启 DSH 并刷新页面。
+        remoteSettings: true

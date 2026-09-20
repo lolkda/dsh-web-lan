@@ -34,9 +34,12 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
-      # 本包零依赖，所以没有 install 步骤可跑 —— 直接测。
+      # 运行时零依赖；测试安装锁定的 Cordis 与官方设置模块验证真实插件生命周期。
+      - name: Install test dependencies
+        run: npm ci --ignore-scripts
+
       - name: Test
-        run: npm test
+        run: npm run check
 
       - name: Tag must match package.json version
         if: startsWith(github.ref, 'refs/tags/v')
