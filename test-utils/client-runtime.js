@@ -66,6 +66,25 @@ export function deferred() {
 	return { promise, resolve, reject };
 }
 
+/**
+ * Wait until a condition holds, yielding between checks.
+ *
+ * A fixed number of ticks is a guess that the Loader finished re-applying an
+ * entry, and a guess is a flake waiting to happen. This waits on the state the
+ * test actually depends on, and says what it was waiting for when it gives up.
+ * @param predicate - the condition to wait for.
+ * @param description - what to name in the failure.
+ * @param timeoutMs - bound on the wait.
+ */
+async function waitFor(predicate, description, timeoutMs = 2000) {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		if (predicate()) return;
+		if (Date.now() >= deadline) throw new Error(`web-lan test: timed out after ${timeoutMs}ms waiting for ${description}`);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
 export async function browser(t, { loopback = false, enabled = true, parallelBoot = false, describe, mutate } = {}) {
 	const ctx = new cordis.Context();
 	const events = new Map();
@@ -141,24 +160,55 @@ export async function browser(t, { loopback = false, enabled = true, parallelBoo
 	t.after(async () => { await ctx.fiber.dispose(); });
 	return {
 		ctx, loader, calls, remote,
-		original: ctx.get('settingsScope'),
+		original: ctx.get('configForms'),
 		models() { return slots.get('models').inject().controller; },
-		mirror() { return ctx.get('settingsScope').describe(); },
+		mirror() { return ctx.get('configForms').describe(); },
 		setDocument(value) { current = value; },
 		emit(event) { for (const listener of [...events.get(event) ?? []]) listener(); },
+		waitFor,
+		/**
+		 * Wait until the LAN provider, its describe read, and the Models page are
+		 * all live again.
+		 *
+		 * A sibling entry that reloads re-applies the LAN entry behind it, and the
+		 * provider that entry mounts is asynchronous by design: `loader.await()`
+		 * resolves before that tail. This is the observable state a test needs
+		 * after a reload, rather than a fixed number of ticks.
+		 * @param options - optional wait bound.
+		 */
+		async ready({ timeoutMs = 2000 } = {}) {
+			await waitFor(
+				() => {
+					const forms = ctx.get('configForms');
+					return forms !== undefined
+						&& forms.describe().getSnapshot().status === 'ready'
+						&& slots.has('models');
+				},
+				'the LAN settings provider, its describe read, and the Models page to be live',
+				timeoutMs,
+			);
+		},
 		async install() {
 			await loader.create({ id: 'lan', name: LAN_PACKAGE });
 			await loader.await();
 		},
 		async uninstall() { await loader.remove('lan'); await loader.await(); },
-		async scope(spec = { namespace: 'test-preferences', decode: (value) => value }) {
-			let scope;
-			const fiber = ctx.plugin({ name: 'settings-consumer', inject: ['settingsScope'], apply(c) {
-				scope = c.settingsScope.bind(spec);
+		/**
+		 * One consumer's form, taken the way a settings consumer takes it on DSH
+		 * 0.1.7: `configForms.get(entryId)`, where the entry id is also the
+		 * namespace. The form is cached per namespace, so two calls for the same
+		 * namespace share one write queue.
+		 * @param entryId - the Host entry id / namespace to read.
+		 * @returns the form and a disposer for the consumer's own lifecycle.
+		 */
+		async scope(entryId = 'test-preferences') {
+			let form;
+			const fiber = ctx.plugin({ name: 'settings-consumer', inject: ['configForms'], apply(c) {
+				form = c.configForms.get(entryId);
 			} });
 			await fiber.await();
-			await ctx.get('settingsScope').describe().ensure();
-			return { get current() { return scope; }, dispose: () => fiber.dispose() };
+			await ctx.get('configForms').describe().ensure();
+			return { get current() { return form; }, dispose: () => fiber.dispose() };
 		}
 	};
 }

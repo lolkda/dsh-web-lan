@@ -63,7 +63,7 @@ test('uninstall restores the original service and permits a clean reinstall', as
 	assert.equal(b.models().store.getSnapshot().status, 'ready');
 });
 
-test('bound preferences read and persist through the existing settings RPC', async (t) => {
+test('a form reads and persists through the existing settings RPC', async (t) => {
 	const b = await browser(t);
 	await b.install();
 	const consumer = await b.scope();
@@ -75,9 +75,15 @@ test('bound preferences read and persist through the existing settings RPC', asy
 	assert.equal(b.calls.writes[0].revision, 1);
 	assert.equal(consumer.current.getSnapshot().value.theme, 'dark');
 	assert.equal(consumer.current.getSnapshot().revision, 2);
+	// 0.1.7's forms belong to the provider, not to the fiber that asked for one:
+	// `configForms.get` caches by namespace so two editors share one write queue,
+	// and only the provider's teardown stops that queue.
 	await consumer.dispose();
 	await consumer.current.set('theme', 'after-unmount');
-	assert.equal(b.calls.writes.length, 1, 'disposed consumers never send new writes');
+	assert.equal(b.calls.writes.length, 2, 'a form outlives the consumer fiber that asked for it');
+	await b.uninstall();
+	await consumer.current.set('theme', 'after-uninstall');
+	assert.equal(b.calls.writes.length, 2, 'uninstalling the provider disposes every form it handed out');
 });
 
 test('backend authorization errors stay errors instead of fabricated settings', async (t) => {
@@ -170,6 +176,9 @@ test('settings provider reload does not duplicate services or strand consumers',
 	await b.install();
 	await b.loader.resolve('upstream-settings').update({ config: { reloadProbe: true } });
 	await b.loader.await();
+	// The reload re-applies the LAN entry behind it, and the provider that entry
+	// mounts is asynchronous; wait for the state this test actually depends on.
+	await b.ready();
 	await b.models().load();
 	assert.equal(b.models().store.getSnapshot().status, 'ready');
 	assert.equal(b.remote.$host.isLoopback, false);
@@ -178,7 +187,7 @@ test('settings provider reload does not duplicate services or strand consumers',
 test('default schema validation supports ordinary preference consumers', async (t) => {
 	const b = await browser(t);
 	await b.install();
-	const consumer = await b.scope({ namespace: 'test-preferences' });
+	const consumer = await b.scope('test-preferences');
 	assert.equal(consumer.current.getSnapshot().status, 'ready');
 	assert.equal(consumer.current.getSnapshot().value.theme, 'light');
 });
@@ -215,12 +224,15 @@ test('an explicit revision fence is preserved and caller operations are copied',
 	assert.equal(b.calls.writes[0].operations[0].value, 'selected');
 });
 
-test('unknown namespaces stay unavailable and rejected decoding retains the accepted value', async (t) => {
+test('unknown namespaces stay unavailable and a refused section keeps the accepted value', async (t) => {
 	const b = await browser(t);
 	await b.install();
-	const unknown = await b.scope({ namespace: 'not-exposed', decode: (value) => value });
+	const unknown = await b.scope('not-exposed');
 	assert.equal(unknown.current.getSnapshot().status, 'unavailable');
-	const valid = await b.scope({ namespace: 'test-preferences', decode: (value) => typeof value?.theme === 'string' ? value : undefined });
+	// 0.1.7's form has no per-consumer decoder: the Host publishes the namespace's
+	// own wire schema, and a section that schema refuses must not replace the value
+	// the form last accepted.
+	const valid = await b.scope('test-preferences');
 	b.mirror().acceptView({ ...documentView().namespaces[0], value: { theme: false }, revision: 2 });
 	assert.equal(valid.current.getSnapshot().value.theme, 'light');
 });
@@ -251,24 +263,53 @@ test('official bundles remain byte-identical after install and uninstall', async
 	for (let i = 0; i < paths.length; i++) assert.ok(before[i].equals(await readFile(paths[i])));
 });
 
-test('failed provider setup rolls back the original enabled state and scope', async (t) => {
+test('a failed provider setup restores the original row before the entry is retried', async (t) => {
 	const b = await browser(t);
 	const entry = b.loader.resolve('upstream-settings');
 	const update = entry.update.bind(entry);
-	let rejected = false;
+	/** Every call the plugin made, with the row it observed on entry. */
+	const calls = [];
+	let refused = false;
 	// Inject one failure at the public Loader boundary, after isolation was
 	// configured but before the original provider could be started again.
 	entry.update = async (options, ...rest) => {
-		if (!rejected && options.disabled === null && entry.options.isolate?.settingsScope) {
-			rejected = true;
+		calls.push({
+			options: { ...options },
+			isolateBefore: entry.options.isolate === undefined ? undefined : { ...entry.options.isolate },
+			disabledBefore: entry.disabled,
+		});
+		if (!refused && options.disabled === null && entry.options.isolate?.configForms) {
+			refused = true;
 			throw new Error('fixture start rejected');
 		}
 		return update(options, ...rest);
 	};
-	await assert.rejects(b.install(), /fixture start rejected/);
+	await b.install();
+	const refusal = calls.findIndex((call) => call.options.disabled === null && call.isolateBefore?.configForms);
+	assert.equal(refused, true, 'the fixture must have refused the first start');
+	assert.deepEqual(
+		calls[refusal].isolateBefore,
+		{ configForms: '@lolkda/dsh-web-lan/original-settings' },
+		'the refusal must land with the row isolated',
+	);
+	// The rollback is the three calls right after the refusal: stop, drop the
+	// isolation, start again — the row's own original configuration.
+	assert.deepEqual(
+		calls.slice(refusal + 1, refusal + 4).map((call) => call.options),
+		[{ disabled: true }, { isolate: null }, { disabled: null }],
+		'a refused start must be rolled back through the public Loader API',
+	);
+	const retry = calls[refusal + 4];
+	assert.equal(retry.isolateBefore, undefined, 'the rollback must leave no isolation behind');
+	assert.equal(retry.disabledBefore, false, 'and the row must be running again before the retry');
+	assert.equal(
+		calls.filter((call) => call.options.isolate?.configForms).length,
+		2,
+		'isolation is configured once per attempt: the refused one and the retry',
+	);
 	assert.equal(entry.disabled, false);
-	assert.equal(entry.options.isolate, undefined);
-	assert.equal(b.mirror().getSnapshot().status, 'unavailable');
+	assert.equal(entry.options.isolate?.configForms, '@lolkda/dsh-web-lan/original-settings');
+	assert.equal(b.mirror().getSnapshot().status, 'ready', 'and the retry leaves LAN settings in force');
 });
 
 test('parallel browser startup settles with the real Models page ready', { timeout: 3000 }, async (t) => {

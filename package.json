@@ -1,6 +1,6 @@
 {
   "name": "@lolkda/dsh-web-lan",
-  "version": "0.1.1",
+  "version": "0.2.0-rc.1",
   "description": "Let `dsh web` be reachable from other machines on the LAN / a virtual LAN (SD-WAN, Tailscale, ZeroTier) with no extra command line: ships a profile patch layer that binds all interfaces, widens the /api Host trust fence, and extends the browser-session cookie. Optional token-free entry at /go. Restores LAN model settings through public plugin APIs without modifying DSH.",
   "repository": { "type": "git", "url": "git+https://github.com/lolkda/dsh-web-lan.git" },
   "homepage": "https://github.com/lolkda/dsh-web-lan#readme",
@@ -37,11 +37,17 @@
       ]
     }
   },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "0.1.7-rc.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": { "optional": true }
+  },
   "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.2",
-    "@deepseek-ai/cordis-plugin-loader": "1.0.3",
-    "@deepseek-ai/dsh-client-ui-settings": "0.1.6-alpha.2",
-    "@deepseek-ai/dsh-client-ui-settings-models": "0.1.6-alpha.2",
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.5",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.7-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings-models": "0.1.7-rc.1",
     "react": "18.3.1"
   },
   "keywords": [
