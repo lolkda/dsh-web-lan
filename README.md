@@ -125,3 +125,28 @@ npm run check
 ```
 
 回归测试在独立内存环境中运行未经修改的官方设置和模型页控制器，以及真实 Cordis/Loader 生命周期，覆盖原始报错、LAN 恢复、本机不受影响、卸载恢复、失败回滚、并发保存、过期响应、推送更新与重载。不连接正在运行的 DSH，也不读取或改写用户配置；这不等同于已在你的远端浏览器完成现场验收。
+
+## 发布
+
+推一个 `v*` 标签即发布，也可以手动触发 `.github/workflows/publish.yml` 重跑。整条流水线只有一条路径：**测试 → 闸门 → 打包 → 上传 artifact → 发布刚打出来的那个 tarball**，所以发出去的字节就是 CI 里跑过测试、并在 run artifact 里留档的那一份。
+
+```powershell
+git tag v0.2.0-rc.1
+git push origin v0.2.0-rc.1
+```
+
+闸门逻辑在 `scripts/release.mjs`（单测在 `test/release.test.js`），不写在 YAML 里：
+
+- 标签版本必须等于 `package.json` 的 `version`（打错标签不会静默发错版本）；
+- 该版本已存在于 registry 则直接失败（npm 同一版本不可覆盖）；
+- **dist-tag 由版本决定**：`0.2.0-rc.1` 这类预发布走 `next`，只有正式版走 `latest`。npm ≥ 11 对预发布强制要求显式 `--tag`，而它的默认值是 `latest` —— 让 rc 变成 `latest` 会把未定版通过 `dsh plugin add @lolkda/dsh-web-lan` 发给所有人。
+
+凭据用仓库 Secret `NPM_TOKEN`（npmjs.com 的 **Automation** token；开了 2FA 的账号不能用 Publish token，CI 里会被 OTP 卡住）。装 rc 时客户端要显式指定版本号：`dsh plugin --profile web add @lolkda/dsh-web-lan@0.2.0-rc.1`。
+
+本地想先看一眼要发什么（不发布）：
+
+```powershell
+npm pack --pack-destination dist          # dist/lolkda-dsh-web-lan-<version>.tgz
+npm publish ./dist/*.tgz --tag next --dry-run
+```
+

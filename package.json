@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "test": "node --test",
-    "check": "node --check lib/index.js && node --check lib/client.js && node --test"
+    "check": "node --check lib/index.js && node --check lib/client.js && node --check scripts/release.mjs && node --test"
   },
   "dsh": {
     "client": {
@@ -66,6 +66,7 @@
   },
   "license": "MIT",
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
   }
 }

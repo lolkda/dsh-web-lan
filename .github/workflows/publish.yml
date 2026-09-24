@@ -1,14 +1,23 @@
 # 发布到 npm：打 v* 标签即发布，也可手动触发（workflow_dispatch）重跑。
 #
-# 发布前有三道闸：
-#   1. 测试必须过
+# 一次发布只有一条路径：测试 → 闸门 → 打包 → 留档 → 发布刚打出来的那个 tarball。
+# 发布的正是 CI 里跑过测试、并已上传 artifact 的那个文件 —— 不存在"发布时重新打一次包"
+# 导致发布的字节与验证过的字节不一致的可能。
+#
+# 闸门逻辑在 scripts/release.mjs（有单测，见 test/release.test.js），不写在 YAML 里：
+#   1. 测试必须过（npm run check），发生在打包之前
 #   2. 标签版本必须等于 package.json 的 version（打错标签不会静默发错版本）
 #   3. 该版本若已存在则拒绝（npm 的同一版本不可覆盖，早失败比等 npm 报错清楚）
+#   4. dist-tag 由版本决定：0.2.0-rc.1 这类预发布走 next，只有正式版走 latest。
+#      npm ≥ 11 对预发布强制要求显式 --tag（"You must specify a tag using --tag when
+#      publishing a prerelease version."），缺了直接报错；而若给它 latest，就会让 rc
+#      通过 `dsh plugin add @lolkda/dsh-web-lan` 发给所有人。
 #
-# 凭据走仓库 Secret `NPM_TOKEN`。想免掉长期 token 的话，可以在 npmjs.com 给本包
-# 配置 Trusted Publisher（GitHub Actions + 本仓库 + 本工作流名），然后删掉下面
-# publish 步骤的 NODE_AUTH_TOKEN、并去掉本文件的 Secret 依赖 —— 那样 CI 用 OIDC
-# 短时凭据换取发布权，仓库里不再有可长期使用的发布 token。
+# 凭据走仓库 Secret `NPM_TOKEN`（npmjs.com 的 Automation token；开了 2FA 的账号必须用
+# Automation 类型，普通 Publish token 在 CI 里会被 OTP 卡住）。想免掉长期 token 的话，
+# 可以在 npmjs.com 给本包配置 Trusted Publisher（GitHub Actions + 本仓库 + 本工作流名），
+# 然后删掉 Publish 步骤的 NODE_AUTH_TOKEN、并去掉 Check credentials 这一步 —— 那样 CI
+# 用 OIDC 短时凭据换取发布权，仓库里不再有可长期使用的发布 token。
 name: Publish to npm
 
 on:
@@ -22,6 +31,11 @@ on:
 permissions:
   contents: read
   id-token: write
+
+# 同一个 ref 上的发布串行化：避免两个 run 同时走到 npm publish，白烧一次失败。
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -41,29 +55,73 @@ jobs:
       - name: Test
         run: npm run check
 
-      - name: Tag must match package.json version
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
-          pkg="$(node -p "require('./package.json').version")"
-          if [ "$tag" != "$pkg" ]; then
-            echo "::error::tag v${tag} does not match package.json version ${pkg}"
-            exit 1
-          fi
-          echo "releasing ${pkg}"
-
-      - name: Refuse to republish an existing version
+      # 三道闸门 + dist-tag 决策。手动触发时没有标签，只跳过标签校验，其余照旧。
+      - name: Release gate
+        id: gate
         run: |
           set -euo pipefail
           name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
-          if npm view "${name}@${version}" version >/dev/null 2>&1; then
-            echo "::error::${name}@${version} is already published — bump package.json and re-tag"
+          published="$(npm view "${name}" versions --json 2>/dev/null || echo '[]')"
+          tag=""
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then tag="${GITHUB_REF_NAME}"; fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          node scripts/release.mjs --version "${version}" --tag "${tag}" --published "${published}" >> "$GITHUB_OUTPUT"
+
+      # 只打一次包，后面发布的就是它。npm 不会自己创建 --pack-destination 目录。
+      - name: Pack
+        id: pack
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          npm pack --pack-destination dist
+          tarball="$(ls dist/*.tgz)"
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+
+      # 留档：产物可下载、可复现，事后能跟 registry 上的文件比对。
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: dist/*.tgz
+
+      - name: Check credentials
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::repository secret NPM_TOKEN is missing — add an npm Automation token, or configure a Trusted Publisher for this package and drop this step"
             exit 1
           fi
 
       - name: Publish
-        run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          # "./" 前缀不能省：npm 会把裸的 dist/x.tgz 当成 GitHub 简写（owner/repo）去 ls-remote。
+          # --registry 显式指定：对 tarball 形式的 spec，npm 不读 publishConfig.registry，
+          # 只认 .npmrc/命令行，装机器上的默认 registry 可能是镜像站。
+          npm publish "./${{ steps.pack.outputs.tarball }}" \
+            --tag "${{ steps.gate.outputs.npm-tag }}" \
+            --access public \
+            --provenance \
+            --registry=https://registry.npmjs.org/
+
+      - name: Verify
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          name="$(node -p "require('./package.json').name")"
+          version="${{ steps.gate.outputs.version }}"
+          npm_tag="${{ steps.gate.outputs.npm-tag }}"
+          # 显式指定 registry.npmjs.org：跑测试的机器上默认 registry 可能不是它，也可能还没同步。
+          npm view "${name}@${version}" version --registry=https://registry.npmjs.org/
+          {
+            echo "### published \`${name}@${version}\`"
+            echo
+            echo "- dist-tag: \`${npm_tag}\`"
+            echo "- tarball: \`${{ steps.pack.outputs.tarball }}\`（本 run 的 artifact：npm-package）"
+            echo "- 用法：\`dsh plugin --profile web add ${name}@${version}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
