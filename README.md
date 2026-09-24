@@ -153,6 +153,8 @@ git push origin v0.2.0-rc.1
 
 没登记就发布的话，`npm publish` 会以 `ENEEDAUTH` 失败 —— 那是配置缺失，不是脚本问题。Trusted Publishing 要求 npm CLI ≥ 11.5.1 / Node ≥ 22.14.0，工作流里因此显式升了一次 npm（runner 上 Node 22 自带 npm 10.x）。npm 侧还可以打开包设置的 *Require two-factor authentication and disallow tokens*，那样连长期 token 都发不了，与 OIDC 正好配套。
 
+发布是异步的：`npm publish` 返回成功后 registry 只会回一句 *Your package is being processed and may take a few minutes to become available.*，实测约 3 分钟后 `npm view` 才读得到。所以 Verify 步骤是轮询（18 × 10s）而不是查一次 —— 查一次会给成功发布判假红；轮不到才是真失败，最后还会断言 `next`/`latest` 正好指向刚发的版本。
+
 装 rc 时客户端要显式指定版本号：`dsh plugin --profile web add @lolkda/dsh-web-lan@0.2.0-rc.1`。
 
 本地想先看一眼要发什么（不发布）：

@@ -121,11 +121,37 @@ jobs:
           name="$(node -p "require('./package.json').name")"
           version="${{ steps.gate.outputs.version }}"
           npm_tag="${{ steps.gate.outputs.npm-tag }}"
-          npm view "${name}@${version}" version --registry=https://registry.npmjs.org/
+          registry=https://registry.npmjs.org/
+
+          # 发布是异步的：registry 会回一句 "Your package is being processed and may take a
+          # few minutes to become available."（实测约 3 分钟后才可读），所以这里必须轮询 ——
+          # 只查一次会给一次成功发布判假红，把真正的失败淹掉。
+          attempts=18
+          interval=10
+          for i in $(seq 1 "${attempts}"); do
+            if npm view "${name}@${version}" version --registry="${registry}" >/dev/null 2>&1; then
+              echo "readable after ${i} check(s)"
+              break
+            fi
+            if [ "${i}" -eq "${attempts}" ]; then
+              echo "::error::${name}@${version} is still not readable on ${registry} after $((attempts * interval))s"
+              exit 1
+            fi
+            sleep "${interval}"
+          done
+
+          # dist-tag 必须正好指向刚发的版本：预发布走 next、正式版走 latest，两者不能互相串。
+          tagged="$(npm view "${name}@${npm_tag}" version --registry="${registry}")"
+          if [ "${tagged}" != "${version}" ]; then
+            echo "::error::dist-tag ${npm_tag} points at ${tagged}, not ${version}"
+            exit 1
+          fi
+
+          npm view "${name}@${version}" dist --registry="${registry}"
           {
             echo "### published \`${name}@${version}\`"
             echo
-            echo "- dist-tag: \`${npm_tag}\`"
-            echo "- tarball: \`${{ steps.pack.outputs.tarball }}\`（本 run 的 artifact：npm-package）"
+            echo "- dist-tag: \`${npm_tag}\` → \`${version}\`"
+            echo "- tarball: \`${{ steps.pack.outputs.tarball }}\`（本 run 的 artifact：npm-package；sha1 应与上面的 dist.shasum 一致）"
             echo "- 用法：\`dsh plugin --profile web add ${name}@${version}\`"
           } >> "$GITHUB_STEP_SUMMARY"
