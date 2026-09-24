@@ -13,11 +13,19 @@
 #      publishing a prerelease version."），缺了直接报错；而若给它 latest，就会让 rc
 #      通过 `dsh plugin add @lolkda/dsh-web-lan` 发给所有人。
 #
-# 凭据走仓库 Secret `NPM_TOKEN`（npmjs.com 的 Automation token；开了 2FA 的账号必须用
-# Automation 类型，普通 Publish token 在 CI 里会被 OTP 卡住）。想免掉长期 token 的话，
-# 可以在 npmjs.com 给本包配置 Trusted Publisher（GitHub Actions + 本仓库 + 本工作流名），
-# 然后删掉 Publish 步骤的 NODE_AUTH_TOKEN、并去掉 Check credentials 这一步 —— 那样 CI
-# 用 OIDC 短时凭据换取发布权，仓库里不再有可长期使用的发布 token。
+# 凭据走 npm Trusted Publishing（OIDC）：仓库里没有任何长期 token，下面两步用 GitHub 的
+# 短时 id-token 跟 npm 换取一次性的发布凭据。前提是先在 npmjs.com 的包设置里登记本工作流：
+#
+#   npmjs.com → @lolkda/dsh-web-lan → Settings → Trusted Publisher → GitHub Actions
+#     Organization or user: lolkda
+#     Repository:           dsh-web-lan
+#     Workflow filename:    publish.yml      （只写文件名，不要路径；必须与 .github/workflows/ 下一致）
+#     Environment name:    留空
+#     Allowed actions:     勾上直接发布（npm publish）；只勾 stage publish 的话这里会 E401
+#
+# 没登记就去发的话，npm publish 会以 ENEEDAUTH 失败 —— 那是配置缺失，不是脚本问题。
+# 顺带一提：npm 侧还有 "Require two-factor authentication and disallow tokens" 这个开关，
+# 打开后连长期 token 都不能发布，配合本工作流正好把仓库里最后一份可长期使用的凭据去掉。
 name: Publish to npm
 
 on:
@@ -26,8 +34,8 @@ on:
       - 'v*'
   workflow_dispatch:
 
-# contents: read 是最小读权限；id-token: write 是 `--provenance` 需要的
-# OIDC 令牌来源，用于把构建来源证明写进公开的透明日志。
+# contents: read 是最小读权限；id-token: write 是 OIDC 的来源，没有它 npm 拿不到
+# 一次性凭据，--provenance 也无从签名。
 permissions:
   contents: read
   id-token: write
@@ -43,10 +51,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 故意不传 registry-url：那是给长期 token 用的（它会在 .npmrc 里写一行
+      # ${NODE_AUTH_TOKEN}），而 OIDC 发布不需要、也不该有 .npmrc 里的 token。
+      # registry 在 publish / view 上显式指定。
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
 
       # 运行时零依赖；测试安装锁定的 Cordis 与官方设置模块验证真实插件生命周期。
       - name: Install test dependencies
@@ -85,23 +95,20 @@ jobs:
           name: npm-package
           path: dist/*.tgz
 
-      - name: Check credentials
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Trusted Publishing 要求 npm CLI ≥ 11.5.1（Node ≥ 22.14.0），而 runner 上
+      # Node 22 自带的是 npm 10.x —— 它不认识 OIDC，会直接 ENEEDAUTH。
+      - name: Use an npm that can do trusted publishing
         run: |
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::repository secret NPM_TOKEN is missing — add an npm Automation token, or configure a Trusted Publisher for this package and drop this step"
-            exit 1
-          fi
+          set -euo pipefail
+          npm install -g 'npm@^11.5.1'
+          npm --version
 
       - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           # "./" 前缀不能省：npm 会把裸的 dist/x.tgz 当成 GitHub 简写（owner/repo）去 ls-remote。
           # --registry 显式指定：对 tarball 形式的 spec，npm 不读 publishConfig.registry，
-          # 只认 .npmrc/命令行，装机器上的默认 registry 可能是镜像站。
+          # 只认 .npmrc/命令行；顺带保证 OIDC 的 audience 是 npm:registry.npmjs.org。
           npm publish "./${{ steps.pack.outputs.tarball }}" \
             --tag "${{ steps.gate.outputs.npm-tag }}" \
             --access public \
@@ -109,14 +116,11 @@ jobs:
             --registry=https://registry.npmjs.org/
 
       - name: Verify
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           name="$(node -p "require('./package.json').name")"
           version="${{ steps.gate.outputs.version }}"
           npm_tag="${{ steps.gate.outputs.npm-tag }}"
-          # 显式指定 registry.npmjs.org：跑测试的机器上默认 registry 可能不是它，也可能还没同步。
           npm view "${name}@${version}" version --registry=https://registry.npmjs.org/
           {
             echo "### published \`${name}@${version}\`"

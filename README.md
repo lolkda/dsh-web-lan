@@ -141,7 +141,19 @@ git push origin v0.2.0-rc.1
 - 该版本已存在于 registry 则直接失败（npm 同一版本不可覆盖）；
 - **dist-tag 由版本决定**：`0.2.0-rc.1` 这类预发布走 `next`，只有正式版走 `latest`。npm ≥ 11 对预发布强制要求显式 `--tag`，而它的默认值是 `latest` —— 让 rc 变成 `latest` 会把未定版通过 `dsh plugin add @lolkda/dsh-web-lan` 发给所有人。
 
-凭据用仓库 Secret `NPM_TOKEN`（npmjs.com 的 **Automation** token；开了 2FA 的账号不能用 Publish token，CI 里会被 OTP 卡住）。装 rc 时客户端要显式指定版本号：`dsh plugin --profile web add @lolkda/dsh-web-lan@0.2.0-rc.1`。
+凭据用 **npm Trusted Publishing（OIDC）**：仓库里不放任何长期 token，CI 用 GitHub 的短时 id-token 找 npm 换一次性发布凭据。发布前需要在 npmjs.com 登记一次本工作流（**包设置 → Trusted Publisher → GitHub Actions**）：
+
+| 字段 | 值 |
+| --- | --- |
+| Organization or user | `lolkda`（仓库所有者） |
+| Repository | `dsh-web-lan` |
+| Workflow filename | `publish.yml`（只写文件名，不要路径） |
+| Environment name | 留空 |
+| Allowed actions | 勾上**直接发布**（`npm publish`）；2026-09-03 之后新建的配置默认只允许 `npm stage publish` |
+
+没登记就发布的话，`npm publish` 会以 `ENEEDAUTH` 失败 —— 那是配置缺失，不是脚本问题。Trusted Publishing 要求 npm CLI ≥ 11.5.1 / Node ≥ 22.14.0，工作流里因此显式升了一次 npm（runner 上 Node 22 自带 npm 10.x）。npm 侧还可以打开包设置的 *Require two-factor authentication and disallow tokens*，那样连长期 token 都发不了，与 OIDC 正好配套。
+
+装 rc 时客户端要显式指定版本号：`dsh plugin --profile web add @lolkda/dsh-web-lan@0.2.0-rc.1`。
 
 本地想先看一眼要发什么（不发布）：
 
