@@ -32,12 +32,16 @@ dsh web
 ## 安装
 
 ```powershell
-dsh plugin --profile web add /absolute/path/lolkda-dsh-web-lan-0.2.0-rc.1.tgz
+dsh plugin --profile web add @lolkda/dsh-web-lan@0.2.0
 ```
 
 `dsh plugin add` 会做一件事：因为本包声明了 `dsh.bundle.patch`，CLI 的 `reconcilePlugins` 会把它追加进 profile 的 `dsh.profile.bundles` —— 于是这一层成为**每次启动的一部分**，不再需要 `--patch`。
 
-本地适配版 `0.2.0-rc.1` 面向 DSH `0.1.7-rc.1`，客户端使用新版 `configForms`（不再使用已删除的 `settingsScope`）；读取、保存、卸载恢复与权限检查保持原契约，写入拒绝返回 `false`。回归测试固定使用该 DSH 版本，未对未经验证的新 DSH 版本放开版本门禁。更新本目录不会自动替换先前安装的副本，需要重新打包安装。
+客户端使用 `configForms`（不再使用已删除的 `settingsScope`）；读取、保存、卸载恢复与权限检查保持原契约，写入拒绝返回 `false`。
+
+本插件不再指定 DSH 的精确版本或版本上限：`peerDependencies["@deepseek-ai/dsh"]` 和 `dsh.compatibility.dsh` 均为 `"*"`，保留 optional peer 与 `web` profile 声明。新版 DSH 的 peer 校验包含预发布版本，因此 `0.2.0-rc.2` 等 RC 版本也不会仅因版本号被本插件拒绝，无需逐版本执行 `allow-version`。这只放宽本插件的加载声明，不会关闭 DSH 对其他插件的检查，也不改变登录、Host/Origin 或写权限检查。
+
+**不限制版本号不等于保证所有版本 API 兼容。** 开发回归依赖仍固定为 DSH `0.1.7-rc.1` 的设置组件；上游接口变更仍可能需要适配。更新本目录不会自动替换已安装或已发布的 `0.2.0-rc.1` 副本，需要重新打包安装；发布到 npm 则须先递增插件版本。
 
 装完重启 `dsh web`，并刷新浏览器。启动行会按网卡逐个打印可用地址：
 
@@ -131,8 +135,8 @@ npm run check
 推一个 `v*` 标签即发布，也可以手动触发 `.github/workflows/publish.yml` 重跑。整条流水线只有一条路径：**测试 → 闸门 → 打包 → 上传 artifact → 发布刚打出来的那个 tarball**，所以发出去的字节就是 CI 里跑过测试、并在 run artifact 里留档的那一份。
 
 ```powershell
-git tag v0.2.0-rc.1
-git push origin v0.2.0-rc.1
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 闸门逻辑在 `scripts/release.mjs`（单测在 `test/release.test.js`），不写在 YAML 里：
@@ -161,6 +165,6 @@ git push origin v0.2.0-rc.1
 
 ```powershell
 npm pack --pack-destination dist          # dist/lolkda-dsh-web-lan-<version>.tgz
-npm publish ./dist/*.tgz --tag next --dry-run
+npm publish ./dist/*.tgz --tag latest --dry-run
 ```
 
