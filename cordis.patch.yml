@@ -59,12 +59,13 @@
     - id: dsh-web-lan
       name: '@lolkda/dsh-web-lan'
       config:
-        # false（默认）：照旧需要每台设备带一次 token；本包会把带 token 的完整
-        #                URL 按网卡逐个打好，直接复制即可。
-        # true         ：额外注册一个短路径入口，任何能连到这个端口的人打开它都会
-        #                被自动发放会话 —— 等价于这条网段上不要鉴权。仅在你自己
-        #                完全信任的网段（家用 LAN、自建 VPN）上打开。
-        autoLogin: false
+        # true（默认）：注册免 token 入口，任何能连到这个端口的人打开它都会被
+        #               自动发放会话 —— 等价于这条网段上不要鉴权。本包的定位就是
+        #               家用 LAN / 自建 VPN / SD-WAN，所以装了就开；只在你自己完全
+        #               信任的网段部署。
+        # false        ：回到「每台设备带一次 token」：启动时按网卡打印带 token 的
+        #               完整 URL，设备上打开一次即可（cookie 3650 天）。
+        autoLogin: true
         # autoLogin 打开时使用的入口路径。它是 webserver 的 exact 路由，
         # 优先级高于 frontend-static 占的 fallback 座位，所以不会被 SPA 抢走。
         bootstrapPath: '/go'

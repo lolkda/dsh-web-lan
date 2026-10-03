@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { apply, inject, ipv4Addresses, name } from '../lib/index.js';
 
@@ -115,6 +116,15 @@ test('the entry refuses a non-GET method and an untrusted Host', () => {
 	let code;
 	untrusted.registered[0].handler({ method: 'GET', headers: { host: 'evil.example' } }, { writeHead: (c) => { code = c; }, end: () => {} });
 	assert.equal(code, 403);
+});
+
+test('the shipped bundle layer enables the token-free entry by default', async () => {
+	const layer = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
+	// 0.3.0 makes the /go entry opt-out: the row the bundle inserts must carry
+	// autoLogin: true, otherwise every install silently keeps requiring a token
+	// per device — the opposite of what README and the package description say.
+	assert.match(layer, /^\s*autoLogin: true\s*$/mu);
+	assert.doesNotMatch(layer, /^\s*autoLogin: false\s*$/mu);
 });
 
 test('a non-all-interfaces bind warns instead of advertising unreachable URLs', () => {

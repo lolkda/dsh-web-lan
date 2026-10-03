@@ -26,13 +26,13 @@ dsh web
 1. **bind** —— patch 层把 webserver 行的 `host` 设成 `0.0.0.0`。只能从 patch 层进，因为 CLI 和 schema 两道护栏。
 2. **`/api` 的 Host 白名单** —— fence 要求 `Host` 是 loopback 或命中 `trustedHosts`，而 dsh 只在 bind 恰好是 `0.0.0.0` 时才派生 LAN 字面量。本包把 bind 打开后本机 IP 自动可信，另外支持用 `DSH_WEB_TRUSTED_HOSTS` 追加域名（远端用域名/旁路由发布名访问时必需）。
 3. **启动 token** —— token 只在内存里（`randomBytes(32)`，不落盘），但它换来的浏览器 cookie 是用 `$DSH_HOME/.credentials.yaml` 里持久化的密钥签名的，**能跨 dsh 重启存活**。本包把有效期从 30 天拉到 10 年，等于每台设备只需要带一次 token。
-
-4. **远程设置** —— 0.1.1 起修复 LAN 模型页的 `settings are unavailable in this browser`：通过公开插件接口提供宿主设置数据，不改 DSH 本体。
+4. **免 token 入口** —— 默认开启（`autoLogin: true`）：同网段设备直接打开 `http://<IP>:3080/go` 就拿到会话，不再需要逐台带 token。想回到「每台设备带一次 token」把这一项设为 `false` 即可。
+5. **远程设置** —— 0.1.1 起修复 LAN 模型页的 `settings are unavailable in this browser`：通过公开插件接口提供宿主设置数据，不改 DSH 本体。
 
 ## 安装
 
 ```powershell
-dsh plugin --profile web add @lolkda/dsh-web-lan@0.2.0
+dsh plugin --profile web add @lolkda/dsh-web-lan@0.3.0
 ```
 
 `dsh plugin add` 会做一件事：因为本包声明了 `dsh.bundle.patch`，CLI 的 `reconcilePlugins` 会把它追加进 profile 的 `dsh.profile.bundles` —— 于是这一层成为**每次启动的一部分**，不再需要 `--patch`。
@@ -41,15 +41,18 @@ dsh plugin --profile web add @lolkda/dsh-web-lan@0.2.0
 
 本插件不再指定 DSH 的精确版本或版本上限：`peerDependencies["@deepseek-ai/dsh"]` 和 `dsh.compatibility.dsh` 均为 `"*"`，保留 optional peer 与 `web` profile 声明。新版 DSH 的 peer 校验包含预发布版本，因此 `0.2.0-rc.2` 等 RC 版本也不会仅因版本号被本插件拒绝，无需逐版本执行 `allow-version`。这只放宽本插件的加载声明，不会关闭 DSH 对其他插件的检查，也不改变登录、Host/Origin 或写权限检查。
 
-**不限制版本号不等于保证所有版本 API 兼容。** 开发回归依赖仍固定为 DSH `0.1.7-rc.1` 的设置组件；上游接口变更仍可能需要适配。更新本目录不会自动替换已安装或已发布的 `0.2.0-rc.1` 副本，需要重新打包安装；发布到 npm 则须先递增插件版本。
+**不限制版本号不等于保证所有版本 API 兼容。** 开发回归依赖仍固定为 DSH `0.1.7-rc.1` 的设置组件；上游接口变更仍可能需要适配。更新本目录不会自动替换已安装或已发布的旧版本副本，需要重新打包安装；发布到 npm 则须先递增插件版本。
 
-装完重启 `dsh web`，并刷新浏览器。启动行会按网卡逐个打印可用地址：
+装完重启 `dsh web`，并刷新浏览器。启动行会按网卡逐个打印可用地址。默认 `autoLogin: true`，所以打印的是免 token 入口：
 
 ```
 dsh-web-lan: reachable on 0.0.0.0:3080 within 家用局域网 / 虚拟局域网 / VPN
-dsh-web-lan:   192.168.1.5     http://192.168.1.5:3080/?token=...
-dsh-web-lan:   172.30.226.31   http://172.30.226.31:3080/?token=...
+dsh-web-lan:   192.168.1.5     http://192.168.1.5:3080/go
+dsh-web-lan:   172.30.226.31   http://172.30.226.31:3080/go
+dsh-web-lan: autoLogin 已开启 —— 上面这些地址不需要 token，谁能连到这个端口谁就能进。
 ```
+
+`autoLogin: false` 时改为打印带 token 的完整 URL，每台设备打开一次即可。
 
 这修掉了上游的一个坑：`dsh-web-app` 只打印 `lanAddresses[0]`，也就是 `os.networkInterfaces()` 枚举到的第一个地址 —— 在有虚拟网卡的机器上经常是错的那个。
 
@@ -57,25 +60,29 @@ dsh-web-lan:   172.30.226.31   http://172.30.226.31:3080/?token=...
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `autoLogin` | `false` | `true` 时注册一个免 token 入口，任何能连到这个端口的人打开它都会被自动发放会话 |
+| `autoLogin` | `true` | 注册免 token 入口，任何能连到这个端口的人打开它都会被自动发放会话；设 `false` 回到逐台 token |
 | `bootstrapPath` | `/go` | 免 token 入口的路径。注册在 webserver 的 `exact` 表，优先级高于 frontend-static 占的 `fallback` 座位 |
 | `printLanUrls` | `true` | 启动时按网卡打印可达地址 |
 | `remoteSettings` | `true` | 为已登录的 LAN 浏览器恢复模型与命名空间设置；只在全接口监听时启用 |
 
-### 免 token 入口（`autoLogin: true`）
+### 免 token 入口（`autoLogin: true`，默认开启）
 
 打开 `http://192.168.1.5:3080/go` 即可进入，不需要 token。它做的事是 303 重定向到 `connection.authenticatedUrl(...)` —— 这是公开读取本进程启动 token 的唯一途径。
 
-> **这是把这条网段上的鉴权去掉。** 只在你完全信任的网段（家用 LAN、自建 VPN）上打开。
+因为本包的定位就是家用 LAN / 自建 VPN / SD-WAN，**0.3.0 起这一项默认打开**：装完重启就生效，不需要额外配置。
 
-修改配置：改 profile 自己的 `cordis.patch.yml`（它在 bundle 层之后应用），用 id 定向：
+> **这是把这条网段上的鉴权去掉。** 只在完全信任的网段部署；不确定就先关掉它。
+
+关掉它（回到逐台 token）：改 profile 自己的 `cordis.patch.yml`（它在 bundle 层之后应用），用 id 定向：
 
 ```yaml
 - id: dsh-web-lan
   name: '@lolkda/dsh-web-lan'
   config:
-    autoLogin: true
+    autoLogin: false
 ```
+
+id 定向补丁是**整体替换**这一行的 `config`，不是逐字段合并：上面只写 `autoLogin: false` 时，其余字段回落到插件默认值（`bootstrapPath: /go`、`printLanUrls: true`、`remoteSettings: true`），行为与之前一致。要保留别的显式取值就一并写进同一段。
 
 ### LAN 模型设置（`remoteSettings: true`）
 
@@ -95,7 +102,8 @@ dsh-web-lan:   172.30.226.31   http://172.30.226.31:3080/?token=...
   name: '@lolkda/dsh-web-lan'
   config:
     remoteSettings: false
-    # 若原先打开了 autoLogin，需要同时保留 autoLogin: true。
+    # 本段整体替换 config，所以免 token 入口需要在同一段里显式保留：
+    autoLogin: true
 ```
 
 该开关在首页生成时传给浏览器，修改后重启 DSH 并刷新页面生效。
@@ -135,8 +143,8 @@ npm run check
 推一个 `v*` 标签即发布，也可以手动触发 `.github/workflows/publish.yml` 重跑。整条流水线只有一条路径：**测试 → 闸门 → 打包 → 上传 artifact → 发布刚打出来的那个 tarball**，所以发出去的字节就是 CI 里跑过测试、并在 run artifact 里留档的那一份。
 
 ```powershell
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 闸门逻辑在 `scripts/release.mjs`（单测在 `test/release.test.js`），不写在 YAML 里：

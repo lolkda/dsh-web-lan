@@ -1,7 +1,7 @@
 {
   "name": "@lolkda/dsh-web-lan",
-  "version": "0.2.0",
-  "description": "Let `dsh web` be reachable from other machines on the LAN / a virtual LAN (SD-WAN, Tailscale, ZeroTier) with no extra command line: ships a profile patch layer that binds all interfaces, widens the /api Host trust fence, and extends the browser-session cookie. Optional token-free entry at /go. Restores LAN model settings through public plugin APIs without modifying DSH.",
+  "version": "0.3.0",
+  "description": "Let `dsh web` be reachable from other machines on the LAN / a virtual LAN (SD-WAN, Tailscale, ZeroTier) with no extra command line: ships a profile patch layer that binds all interfaces, widens the /api Host trust fence, and extends the browser-session cookie. Token-free entry at /go, on by default (opt out with autoLogin: false). Restores LAN model settings through public plugin APIs without modifying DSH.",
   "repository": { "type": "git", "url": "git+https://github.com/lolkda/dsh-web-lan.git" },
   "homepage": "https://github.com/lolkda/dsh-web-lan#readme",
   "bugs": "https://github.com/lolkda/dsh-web-lan/issues",
