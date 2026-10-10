@@ -28,7 +28,7 @@ connection 保留 webStartup.trustedHosts 和 DSH_WEB_TRUSTED_HOSTS，监听 IP 
 
 - 单元测试验证 CLI/loopback/env/自动选择优先级、本机字面量与非法值拒绝、无 IPv4 fallback、真实 YAML/include/Loader 组合求值。测试依赖补充 include 和 js-yaml，不增加运行期依赖。
 - 运行期测试覆盖具体 IP flag、IPv6 URL、TLS 实际协议、loopback、bootstrap Host 拒绝及路由释放。旧宿主 wildcard 分支仅为旧监听形态保留，不使新版绕过限制。
-- 真实隔离启动验证当前 tarball 在 DSH0.2.1-alpha.2 中的安装与激活、/go→token→cookie、index flag、已认证 API 以及未认证401/未信任403；不运行付费模型，不修改用户 profile。
+- 真实隔离启动验证当前 tarball 在 DSH0.2.1-alpha.2 中的安装与激活、/go→token→cookie、index flag、已认证 API 以及未认证401/未信任403；不运行付费模型，不修改用户 profile。可复现入口为 `npm run test:runtime`（执行 `scripts/test-runtime.mjs`）。
 - 首页客户端入口和资源可用性不等于新版浏览器设置完整现场验收；客户端组件单元仍以锁定旧SDK验证生命周期。CI发布前增加宿主真实启动门禁。
 
 ## Consequences
