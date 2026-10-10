@@ -112,16 +112,29 @@ jobs:
           npm --version
 
       - name: Publish
+        env:
+          # --provenance 要求源仓库对 registry 可验证，npm 只接受**公开**仓库：
+          # 私有仓库会被 registry 以 E422 拒绝（"Unsupported GitHub Actions source
+          # repository visibility: private"）。所以按仓库可见性决定是否附带证明，
+          # 而不是无条件加 flag —— 私有期间不伪造证明，公开后自动恢复。
+          PUBLISH_PROVENANCE: ${{ github.event.repository.visibility == 'public' && '1' || '0' }}
         run: |
           set -euo pipefail
           # "./" 前缀不能省：npm 会把裸的 dist/x.tgz 当成 GitHub 简写（owner/repo）去 ls-remote。
           # --registry 显式指定：对 tarball 形式的 spec，npm 不读 publishConfig.registry，
           # 只认 .npmrc/命令行；顺带保证 OIDC 的 audience 是 npm:registry.npmjs.org。
-          npm publish "./${{ steps.pack.outputs.tarball }}" \
-            --tag "${{ steps.gate.outputs.npm-tag }}" \
-            --access public \
-            --provenance \
+          args=(
+            --tag "${{ steps.gate.outputs.npm-tag }}"
+            --access public
             --registry=https://registry.npmjs.org/
+          )
+          if [ "${PUBLISH_PROVENANCE}" = 1 ]; then
+            args+=(--provenance)
+            echo "publishing with provenance (public source repository)"
+          else
+            echo "publishing without provenance (source repository is not public)"
+          fi
+          npm publish "./${{ steps.pack.outputs.tarball }}" "${args[@]}"
 
       - name: Verify
         run: |
