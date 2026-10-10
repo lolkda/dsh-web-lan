@@ -58,6 +58,11 @@ jobs:
         with:
           node-version: '22'
 
+      # DSH 的 profile/plugin manager 通过 pnpm 安装 bundle；GitHub runner 不保证预装，
+      # 先显式安装固定大版本，避免真实启动门禁在环境准备阶段以 127 失败。
+      - name: Install pnpm for DSH runtime validation
+        run: npm install --global 'pnpm@^10.0.0'
+
       # 运行时零依赖；测试安装锁定的 Cordis 与官方设置模块验证真实插件生命周期。
       - name: Install test dependencies
         run: npm ci --ignore-scripts
