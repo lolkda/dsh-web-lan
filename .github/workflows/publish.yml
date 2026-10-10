@@ -65,6 +65,9 @@ jobs:
       - name: Test
         run: npm run check
 
+      - name: Real Web startup on DSH 0.2.1-alpha.2
+        run: npm run test:runtime
+
       # 三道闸门 + dist-tag 决策。手动触发时没有标签，只跳过标签校验，其余照旧。
       - name: Release gate
         id: gate

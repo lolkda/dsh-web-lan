@@ -1,79 +1,88 @@
 # @lolkda/dsh-web-lan
 
-让 `dsh web` 能被局域网 / 虚拟局域网（SD-WAN、Tailscale、ZeroTier、旁路由组网）里的其他设备访问，**不需要任何额外命令行参数**。
+让 `dsh web` 能被局域网或 VPN（SD-WAN、Tailscale、ZeroTier）中的其他设备访问，通过公开插件配置实现，不修改 DSH 安装文件。
 
-装一次，以后照常启动：
+## 安装与版本
 
-```powershell
+```bash
+dsh plugin --profile web add @lolkda/dsh-web-lan@0.4.0
 dsh web
 ```
 
-## 它解决什么
+**0.4.0 针对 DSH `0.2.1-alpha.2` 的监听与信任接口适配。** 新版 DSH 接受具体本机 IP，拒绝 `0.0.0.0` / `::`。插件从旧版“所有接口监听”改为“选择一个具体接口监听”，不能再声称每个网卡地址同时可达。
 
-`dsh web` 默认只监听 `127.0.0.1`，本机之外一律连不上。官方把改 bind 的开关锁死了两处：
+DSH peer 与兼容元数据仍为 `*`，这只允许加载，不保证所有旧版 API 兼容。旧宿主若只接受 loopback/wildcard，应升级宿主；不通过修改宿主校验来支持它。
 
-| 位置 | 内容 |
-|---|---|
-| `dsh-web-app/lib/startup.js:40` | 显式拒绝 `--host 0.0.0.0` |
-| `dsh-host-webserver/lib/index.js:141` | `host` 的 schema 只接受 `'127.0.0.1' \| '0.0.0.0'` |
+安装会把 bundle 配置加入 Web profile，之后正常 `dsh web` 即可。安装、卸载或修改绑定配置后需要重启 DSH，再刷新浏览器；更新源码不会热替换已安装的 npm 副本。
 
-所以 `--host 192.168.1.5` 会通过 CLI、然后死在校验上；`--host 0.0.0.0` 直接被拒。官方这样设是因为这个面板等价于**本机任意命令执行**。
+## 监听地址选择
 
-本包的做法是保留官方默认姿态，把它变成一个显式选择：**装了就开，卸了就回到 loopback。**
+按以下顺序决定，前面的设置优先：
 
-## 访问需要的几个环节
+1. CLI `--host <具体本机 IP>`。
+2. `DSH_WEB_LOOPBACK=1`：使用 `127.0.0.1`。
+3. `DSH_WEB_HOST=<具体本机 IP>`。
+4. 自动使用 `os.networkInterfaces()` 返回的第一个非 internal IPv4。
+5. 没有非 internal IPv4 时，回退 `127.0.0.1` 并提示无法 LAN 访问。
 
-1. **bind** —— patch 层把 webserver 行的 `host` 设成 `0.0.0.0`。只能从 patch 层进，因为 CLI 和 schema 两道护栏。
-2. **`/api` 的 Host 白名单** —— fence 要求 `Host` 是 loopback 或命中 `trustedHosts`，而 dsh 只在 bind 恰好是 `0.0.0.0` 时才派生 LAN 字面量。本包把 bind 打开后本机 IP 自动可信，另外支持用 `DSH_WEB_TRUSTED_HOSTS` 追加域名（远端用域名/旁路由发布名访问时必需）。
-3. **启动 token** —— token 只在内存里（`randomBytes(32)`，不落盘），但它换来的浏览器 cookie 是用 `$DSH_HOME/.credentials.yaml` 里持久化的密钥签名的，**能跨 dsh 重启存活**。本包把有效期从 30 天拉到 10 年，等于每台设备只需要带一次 token。
-4. **免 token 入口** —— 默认开启（`autoLogin: true`）：同网段设备直接打开 `http://<IP>:3080/go` 就拿到会话，不再需要逐台带 token。想回到「每台设备带一次 token」把这一项设为 `false` 即可。
-5. **远程设置** —— 0.1.1 起修复 LAN 模型页的 `settings are unavailable in this browser`：通过公开插件接口提供宿主设置数据，不改 DSH 本体。
+自动选择不会判断默认路由，也不能保证优先物理网卡；多网卡/VPN 部署请显式指定。非法、wildcard、非本机显式地址会失败，不悄悄换地址。显式 IPv6 使用具体本机地址，URL 以方括号表示。
 
-## 安装
+```bash
+# 选择固定 LAN/VPN 网卡
+DSH_WEB_HOST=192.168.1.5 dsh web
+# CLI 更高优先级
+dsh web --host 192.168.1.5
+# 临时只本机
+DSH_WEB_LOOPBACK=1 dsh web
+```
+
+PowerShell 对应写法：
 
 ```powershell
-dsh plugin --profile web add @lolkda/dsh-web-lan@0.3.0
+$env:DSH_WEB_HOST='192.168.1.5'; dsh web
+$env:DSH_WEB_LOOPBACK='1'; dsh web
 ```
 
-`dsh plugin add` 会做一件事：因为本包声明了 `dsh.bundle.patch`，CLI 的 `reconcilePlugins` 会把它追加进 profile 的 `dsh.profile.bundles` —— 于是这一层成为**每次启动的一部分**，不再需要 `--patch`。
+默认端口仍为 `3080`，`--port 0` 允许操作系统选择空闲端口。TLS 使用 DSH 原生 `--tls-cert` / `--tls-key`，打印与重定向使用实际协议。
 
-客户端使用 `configForms`（不再使用已删除的 `settingsScope`）；读取、保存、卸载恢复与权限检查保持原契约，写入拒绝返回 `false`。
+启动只打印真正监听的地址，例如：
 
-本插件不再指定 DSH 的精确版本或版本上限：`peerDependencies["@deepseek-ai/dsh"]` 和 `dsh.compatibility.dsh` 均为 `"*"`，保留 optional peer 与 `web` profile 声明。新版 DSH 的 peer 校验包含预发布版本，因此 `0.2.0-rc.2` 等 RC 版本也不会仅因版本号被本插件拒绝，无需逐版本执行 `allow-version`。这只放宽本插件的加载声明，不会关闭 DSH 对其他插件的检查，也不改变登录、Host/Origin 或写权限检查。
-
-**不限制版本号不等于保证所有版本 API 兼容。** 开发回归依赖仍固定为 DSH `0.1.7-rc.1` 的设置组件；上游接口变更仍可能需要适配。更新本目录不会自动替换已安装或已发布的旧版本副本，需要重新打包安装；发布到 npm 则须先递增插件版本。
-
-装完重启 `dsh web`，并刷新浏览器。启动行会按网卡逐个打印可用地址。默认 `autoLogin: true`，所以打印的是免 token 入口：
-
-```
-dsh-web-lan: reachable on 0.0.0.0:3080 within 家用局域网 / 虚拟局域网 / VPN
-dsh-web-lan:   192.168.1.5     http://192.168.1.5:3080/go
-dsh-web-lan:   172.30.226.31   http://172.30.226.31:3080/go
-dsh-web-lan: autoLogin 已开启 —— 上面这些地址不需要 token，谁能连到这个端口谁就能进。
+```text
+dsh-web-lan: listening on 192.168.1.5:3080 within 家用局域网 / 虚拟局域网 / VPN
+dsh-web-lan:   http://192.168.1.5:3080/go
 ```
 
-`autoLogin: false` 时改为打印带 token 的完整 URL，每台设备打开一次即可。
+其他网卡不会因此也监听；要同时服务多个接口请自行配置反向代理，本插件不新建多个 listener。
 
-这修掉了上游的一个坑：`dsh-web-app` 只打印 `lanAddresses[0]`，也就是 `os.networkInterfaces()` 枚举到的第一个地址 —— 在有虚拟网卡的机器上经常是错的那个。
+## 访问与信任
 
-## 配置
+- **监听**：前置 `webLanBind` 服务在 webserver 初始化前选择地址，不在启动后改监听。
+- **Host/Origin 围栏**：保留新版 `webStartup.trustedHosts` 的 CLI 值并追加 `DSH_WEB_TRUSTED_HOSTS`。监听 IP 由 DSH 原生围栏接纳；插件不自动信任所有网卡或任意 authority。
+- **认证**：默认保留免 token 的 `/go` 入口；不可信 Host 会被拒绝，登录仍使用 DSH 的 token→cookie 流程。
+- **会话**：cookie 有效期保持 3650 天，密钥由宿主原有持久化机制管理。
 
-| 字段 | 默认 | 说明 |
+若通过域名、反向代理或 Docker bridge 的宿主地址访问，要明确配置浏览器使用的 authority：
+
+```bash
+DSH_WEB_TRUSTED_HOSTS=dev.example,192.168.1.10:3080 dsh web
+# 或新版 DSH 的 CLI 参数
+dsh web --trusted-host dev.example
+```
+
+**Docker bridge**：自动选择的是容器 IP，端口映射到这个接口；浏览器使用宿主 IP/域名，需加入上述信任列表。**host 网络**：显式选择宿主的目标网卡 IP。只监听容器 `127.0.0.1` 不能靠普通 `-p` 映射获得远端访问。
+
+## 插件配置
+
+| 字段 | bundle 默认 | 说明 |
 |---|---|---|
-| `autoLogin` | `true` | 注册免 token 入口，任何能连到这个端口的人打开它都会被自动发放会话；设 `false` 回到逐台 token |
-| `bootstrapPath` | `/go` | 免 token 入口的路径。注册在 webserver 的 `exact` 表，优先级高于 frontend-static 占的 `fallback` 座位 |
-| `printLanUrls` | `true` | 启动时按网卡打印可达地址 |
-| `remoteSettings` | `true` | 为已登录的 LAN 浏览器恢复模型与命名空间设置；只在全接口监听时启用 |
+| `autoLogin` | `true` | 注册免 token 入口；设为 false 使用每台设备一次 token 登录 |
+| `bootstrapPath` | `/go` | exact 路由，优先于 SPA fallback |
+| `printLanUrls` | `true` | 打印实际监听地址，不列出其他未监听网卡 |
+| `remoteSettings` | `true` | 对具体非 loopback 监听启用远程设置标志；loopback 禁用 |
 
-### 免 token 入口（`autoLogin: true`，默认开启）
+### 免 token 入口
 
-打开 `http://192.168.1.5:3080/go` 即可进入，不需要 token。它做的事是 303 重定向到 `connection.authenticatedUrl(...)` —— 这是公开读取本进程启动 token 的唯一途径。
-
-因为本包的定位就是家用 LAN / 自建 VPN / SD-WAN，**0.3.0 起这一项默认打开**：装完重启就生效，不需要额外配置。
-
-> **这是把这条网段上的鉴权去掉。** 只在完全信任的网段部署；不确定就先关掉它。
-
-关掉它（回到逐台 token）：改 profile 自己的 `cordis.patch.yml`（它在 bundle 层之后应用），用 id 定向：
+打开实际监听地址的 `/go`，它通过 `connection.authenticatedUrl(...)` 重定向到 token 登录。默认开启沿用 0.3.0 行为：能连接并通过 Host 围栏的设备即可进入。只在自己选择的可信网络中使用；需要逐设备认证时关闭：
 
 ```yaml
 - id: dsh-web-lan
@@ -82,97 +91,58 @@ dsh-web-lan: autoLogin 已开启 —— 上面这些地址不需要 token，谁�
     autoLogin: false
 ```
 
-id 定向补丁是**整体替换**这一行的 `config`，不是逐字段合并：上面只写 `autoLogin: false` 时，其余字段回落到插件默认值（`bootstrapPath: /go`、`printLanUrls: true`、`remoteSettings: true`），行为与之前一致。要保留别的显式取值就一并写进同一段。
+profile 中 id 定向配置整体替换该行 config，非逐字段合并。只写 autoLogin false 时其他字段回落到插件默认值；要保留其他显式值请一并填写。
 
-### LAN 模型设置（`remoteSettings: true`）
+### 远程设置
 
-0.1.1 增加了浏览器插件部分。官方设置服务会把非本机页面切到内存模式，模型页却需要宿主设置，因此显示 `settings are unavailable in this browser`。本插件通过 Cordis Loader 的公开服务隔离与启停接口，让原有页面使用本插件提供的宿主设置服务。
-
-- **不修改 DSH 的任何安装文件，不替换官方脚本，不改变全局 `isLoopback`。**
-- 所有读取、保存仍调用原有的设置 RPC，服务端登录、Host/Origin 和写权限检查照旧。
-- 本机地址访问保留官方服务；正常卸载浏览器插件时恢复原服务。安装/卸载整个包后应重启 DSH 并刷新页面。
-- 修改的是宿主共享配置，不是当前浏览器自己的副本。开启 `autoLogin` 的设备也能使用这些设置。
-- 不会额外开放通用设置中的本机原始文档编辑/打开功能；这些仍遵守上游自己的本机限制。
-- 若手工移除并重新添加官方设置基础插件，需要刷新页面重新建立服务关系；不会强行接管用户自定义的隔离服务。
-
-如需保留 LAN 访问、仅停用设置修复，在 profile 的补丁层为本插件设置：
+客户端通过公开 Loader/设置 RPC 为已认证的远程浏览器提供宿主设置，不修改全局 `isLoopback`，所有读取和保存仍通过宿主认证、Host/Origin 与写权限检查。设置属于宿主共享配置，并非浏览器私有副本。正常卸载客户端插件恢复原设置服务；安装/卸载整个 npm 包须重启和刷新。
 
 ```yaml
 - id: dsh-web-lan
   name: '@lolkda/dsh-web-lan'
   config:
     remoteSettings: false
-    # 本段整体替换 config，所以免 token 入口需要在同一段里显式保留：
     autoLogin: true
 ```
 
-该开关在首页生成时传给浏览器，修改后重启 DSH 并刷新页面生效。
-
-### 临时回到只本机
-
-```powershell
-$env:DSH_WEB_LOOPBACK='1'; dsh web
-```
+原始文档编辑/本机打开仍遵守上游限制；如果手工替换官方基础设置插件，刷新页面重新建立服务关系，不接管用户自定义隔离服务。
 
 ## 卸载
 
-```powershell
+```bash
 dsh plugin --profile web remove @lolkda/dsh-web-lan
 ```
 
-`reconcilePlugins` 会把它从 `dsh.profile.bundles` 移出，回到 loopback-only。
-
-## 已知边界
-
-- **`0.0.0.0` 是"所有网卡"** —— 它会在虚拟网卡（VPN、Hyper-V、SD-WAN）上一并监听。想只开某一块网卡需要另起 listener 做反代，本包不做。
-- **不改宿主正在运行的监听配置** —— bind 是组合期配置，所以「装/卸」需要重启 `dsh web`。想要网页里的运行时开关得驱动 loader，代价是重新 listen、断开当前连接。
-- **上游升级可能改变假设** —— 本包依赖 `webserver` / `connection` 这两个行 id，以及 `/api` fence 的行为。`dsh-web-lan` 挂载时会检查实际 bind，被后续 patch 层覆盖时会打 warn 而不是打印不可达的地址。
-- **零运行依赖、无需构建** —— 宿主只 import `node:os`；浏览器使用 DSH 的标准模块注册格式，从宿主页面提供的模块表获取 Cordis。裸 checkout 的 `link:` 加载不依赖本地 `node_modules`。测试有锁定的开发依赖。
+重启后恢复原 Web profile 的监听配置。
 
 ## 测试
 
-```powershell
+```bash
 npm ci --ignore-scripts
 npm run check
+npm run verify-notes
+npm run test:runtime
 ```
 
-回归测试在独立内存环境中运行未经修改的官方设置和模型页控制器，以及真实 Cordis/Loader 生命周期，覆盖原始报错、LAN 恢复、本机不受影响、卸载恢复、失败回滚、并发保存、过期响应、推送更新与重载。不连接正在运行的 DSH，也不读取或改写用户配置；这不等同于已在你的远端浏览器完成现场验收。
+单元回归覆盖地址优先级与本机 IP 校验、真实 YAML/bundle 求值、bootstrap/标志/URL、官方客户端设置组件的生命周期、保存拒绝和卸载恢复。真实启动测试隔离安装 DSH `0.2.1-alpha.2` 与本次打包产物，检查具体 IP、loopback、认证和 Host 围栏；不会启动替代当前 GUI 的服务或改用户 profile。测试服务采用独立临时目录和端口，结束清理。单元客户端组件仍使用锁定旧 SDK，不能代替新版浏览器现场验收。
+
+宿主仅依赖 Node 内置模块，客户端通过宿主模块表加载；运行期零第三方依赖。决策记录在 [.agents/notes](.agents/notes/)。
 
 ## 发布
 
-推一个 `v*` 标签即发布，也可以手动触发 `.github/workflows/publish.yml` 重跑。整条流水线只有一条路径：**测试 → 闸门 → 打包 → 上传 artifact → 发布刚打出来的那个 tarball**，所以发出去的字节就是 CI 里跑过测试、并在 run artifact 里留档的那一份。
+现有 `.github/workflows/publish.yml` 使用 tag/OIDC 发布，测试→版本闸门→打包一次→上传 artifact→发布同一 tarball。CI 增加真实新版启动验收，失败不发布。
 
-```powershell
-git tag v0.3.0
-git push origin v0.3.0
+```bash
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
-闸门逻辑在 `scripts/release.mjs`（单测在 `test/release.test.js`），不写在 YAML 里：
+版本标签必须匹配 package.json，已发布版本不可覆盖，正式版走 latest、预发布走 next。npm Trusted Publishing 配置继续使用仓库 `lolkda/dsh-web-lan` 的 `publish.yml`，不引入长期 token。发布后验证 registry 版本可读且 dist-tag 指向本次版本，保留原有短暂传播重试。
 
-- 标签版本必须等于 `package.json` 的 `version`（打错标签不会静默发错版本）；
-- 该版本已存在于 registry 则直接失败（npm 同一版本不可覆盖）；
-- **dist-tag 由版本决定**：`0.2.0-rc.1` 这类预发布走 `next`，只有正式版走 `latest`。npm ≥ 11 对预发布强制要求显式 `--tag`，而它的默认值是 `latest` —— 让 rc 变成 `latest` 会把未定版通过 `dsh plugin add @lolkda/dsh-web-lan` 发给所有人。
+本地检查产物（不发布）：
 
-凭据用 **npm Trusted Publishing（OIDC）**：仓库里不放任何长期 token，CI 用 GitHub 的短时 id-token 找 npm 换一次性发布凭据。发布前需要在 npmjs.com 登记一次本工作流（**包设置 → Trusted Publisher → GitHub Actions**）：
-
-| 字段 | 值 |
-| --- | --- |
-| Organization or user | `lolkda`（仓库所有者） |
-| Repository | `dsh-web-lan` |
-| Workflow filename | `publish.yml`（只写文件名，不要路径） |
-| Environment name | 留空 |
-| Allowed actions | 勾上**直接发布**（`npm publish`）；2026-09-03 之后新建的配置默认只允许 `npm stage publish` |
-
-没登记就发布的话，`npm publish` 会以 `ENEEDAUTH` 失败 —— 那是配置缺失，不是脚本问题。Trusted Publishing 要求 npm CLI ≥ 11.5.1 / Node ≥ 22.14.0，工作流里因此显式升了一次 npm（runner 上 Node 22 自带 npm 10.x）。npm 侧还可以打开包设置的 *Require two-factor authentication and disallow tokens*，那样连长期 token 都发不了，与 OIDC 正好配套。
-
-发布是异步的：`npm publish` 返回成功后 registry 只会回一句 *Your package is being processed and may take a few minutes to become available.*，实测约 3 分钟后 `npm view` 才读得到。所以 Verify 步骤是轮询（18 × 10s）而不是查一次 —— 查一次会给成功发布判假红；轮不到才是真失败，最后还会断言 `next`/`latest` 正好指向刚发的版本。
-
-装 rc 时客户端要显式指定版本号：`dsh plugin --profile web add @lolkda/dsh-web-lan@0.2.0-rc.1`。
-
-本地想先看一眼要发什么（不发布）：
-
-```powershell
-npm pack --pack-destination dist          # dist/lolkda-dsh-web-lan-<version>.tgz
+```bash
+mkdir -p dist
+npm pack --pack-destination dist
 npm publish ./dist/*.tgz --tag latest --dry-run
 ```
-

@@ -4,34 +4,49 @@
 # 不需要任何 --patch 参数、环境变量或快捷方式。这就是「彻底解决」的全部机制。
 #
 # 它必须在 @deepseek-ai/dsh-web-app 之后应用（bundles 数组里排在后面），
-# 因为要覆盖的 webserver / connection 两行是 dsh-web-app 插入的。
+# 因为下面要覆盖的 webserver / connection 两行是 dsh-web-app 插入的。
 #
-# ── 为什么必须从 patch 层改 bind ──────────────────────────────────────────
-# CLI 的 --host 被两道护栏锁死，任何非 loopback 的 bind 都出不来：
-#   dsh-web-app/lib/startup.js:40       显式拒绝 --host 0.0.0.0
-#   dsh-host-webserver/lib/index.js:141  host 的 schema 只接受 '127.0.0.1' | '0.0.0.0'
-# 这两道都是官方为「这个面板等于本机任意命令执行」而设的安全默认值。本包的做法
-# 是保留默认姿态、把它变成显式选择：装了就开，卸了就回到 loopback。
+# ── 为什么必须在 webserver 之前定出一个「具体地址」 ────────────────────────
+# DSH 0.2.1-alpha.2 不再接受 wildcard bind，两道护栏指向同一个结论：
+#   dsh-web-app/lib/startup.js             --host 0.0.0.0 / :: 直接 usage error
+#   dsh-host-webserver 的 config schema    host 只接受具体 IPv4/IPv6 字面量
+# 官方这样设计，是因为这个面板等价于本机的任意命令执行。本包不绕过校验，而是把
+# 地址解析提前：下面 insert 的 dsh-web-lan-bind 行提供 webLanBind 服务，webserver
+# 行 inject 它，并从 ctx.webLanBind.host 取监听地址。
+#
+# 解析优先级（lib/bind.js 的 resolveBindHost，全部来自本机 interfaces）：
+#   --host > DSH_WEB_LOOPBACK=1 > DSH_WEB_HOST > 第一个非 internal IPv4 > 127.0.0.1（并告警）
+# 显式给出的地址必须是一个本机具体 IP：wildcard、非法字面量、非本机地址都会被拒绝，
+# 不做模糊回退。loopback（含 ::1）保留。多网卡部署请显式指定地址 —— 只监听一个接口，
+# 不再承诺所有网卡同时可访问。
 
-# 绑所有接口。带一个逃生口：临时只想本机，用 $env:DSH_WEB_LOOPBACK='1' 启动。
-# 显式传 --host 时以命令行为准（但 --host 0.0.0.0 仍会被 CLI 拒掉）。
+# 监听地址解析服务。零第三方运行期依赖（只用 node:net / node:os），名字由本包
+# package.json 的 exports "./bind" 暴露；inject 由该模块自己声明。
+- insert:
+    - id: dsh-web-lan-bind
+      name: '@lolkda/dsh-web-lan/bind'
+
+# 绑到上面解析出的那一个具体地址。逃生口：临时只想本机，用 $env:DSH_WEB_LOOPBACK='1'
+# 启动（显式传 --host 时以命令行为准）。端口沿用 0.2.1-alpha.2 的 dsh-web-app 默认；
+# --port 0 必须原样交给 OS 选端口，所以这里用 ?? 而不是 ||。
 - id: webserver
   name: '@deepseek-ai/dsh-host-webserver'
-  inject: [webStartup]
+  inject: [webStartup, webLanBind]
   config:
-    host: !!js ctx.webStartup.host ?? ((process.env.DSH_WEB_LOOPBACK === '1') && '127.0.0.1' || '0.0.0.0')
+    host: !!js ctx.webLanBind.host
     port: !!js ctx.webStartup.port ?? 3080
+    tls: !!js ctx.webStartup.tls
     compression: gzip
     compressionLevel: 1
     compressionThresholdBytes: 1024
 
 # 两个独立的问题都在这一行：
 #
-# 1) Host 白名单。/api 的 browser-trust fence 要求 Host 是 loopback 或命中
-#    trustedHosts；而 dsh-web-app 的 resolveLanTrust() 只在 bind 恰好是 '0.0.0.0'
-#    时才派生 LAN 字面量（取本机所有非 internal IPv4）。上面已经把 bind 改成
-#    0.0.0.0，所以本机 IP 自动可信；这里额外拼上 DSH_WEB_TRUSTED_HOSTS，供
-#    「远端用域名 / SD-WAN 名字 / 旁路由发布名」访问时补白名单。
+# 1) Host 白名单。新版 connection 只从 webStartup 取 invocation authority
+#    （每个 --trusted-host 一条），旧的 webRuntime.trustedHosts 已不存在。监听地址
+#    本身由 fence 的 listener-bind 例外接纳，不必写进白名单；这里额外拼上
+#    DSH_WEB_TRUSTED_HOSTS，供「远端用域名 / SD-WAN 名字 / 旁路由发布名」访问时补白名单。
+#    不把本机所有网卡地址自动塞进信任列表：信任要显式。
 #
 # 2) 会话有效期。dsh 的启动 token 只在内存里（randomBytes(32)，不落盘），但它换来的
 #    浏览器 cookie 用 $DSH_HOME/.credentials.yaml 里持久化的
@@ -48,12 +63,12 @@
 # 所以这里用 .concat(...) 而非 [ ... ]，用 && / || 而非三元。
 - id: connection
   name: '@deepseek-ai/dsh-client-connection'
-  inject: [webRuntime]
+  inject: [webStartup]
   config:
     cookieMaxAgeDays: 3650
-    trustedHosts: !!js ctx.webRuntime.trustedHosts.concat((process.env.DSH_WEB_TRUSTED_HOSTS || '').split(',').map(s => s.trim()).filter(Boolean))
+    trustedHosts: !!js ctx.webStartup.trustedHosts.concat((process.env.DSH_WEB_TRUSTED_HOSTS || '').split(',').map(s => s.trim()).filter(Boolean))
 
-# 宿主半边：打印各网卡地址、可选的免 token 入口，以及向已认证首页提供
+# 宿主半边：打印实际监听地址、可选的免 token 入口，以及向已认证首页提供
 # LAN 设置开关。浏览器半边通过公开 Loader/设置服务接口恢复模型设置，不改 DSH 文件。
 - insert:
     - id: dsh-web-lan
@@ -63,13 +78,13 @@
         #               自动发放会话 —— 等价于这条网段上不要鉴权。本包的定位就是
         #               家用 LAN / 自建 VPN / SD-WAN，所以装了就开；只在你自己完全
         #               信任的网段部署。
-        # false        ：回到「每台设备带一次 token」：启动时按网卡打印带 token 的
-        #               完整 URL，设备上打开一次即可（cookie 3650 天）。
+        # false        ：回到「每台设备带一次 token」：启动时打印带 token 的完整 URL
+        #               （即上面解析出的那个监听地址），设备上打开一次即可（cookie 3650 天）。
         autoLogin: true
         # autoLogin 打开时使用的入口路径。它是 webserver 的 exact 路由，
         # 优先级高于 frontend-static 占的 fallback 座位，所以不会被 SPA 抢走。
         bootstrapPath: '/go'
-        # 启动时按网卡逐个打印可达地址。
+        # 启动时打印实际监听地址。
         printLanUrls: true
 
         # 让已登录的 LAN 浏览器使用宿主设置；不修改 isLoopback 或登录/Host 校验。
